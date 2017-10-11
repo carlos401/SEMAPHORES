@@ -5,12 +5,12 @@ public class Edificio {
     /**
      * Cola de solicitudes por atender, a ella acceden todos los ascensores
      */
-    private Map<Integer,Integer> solicitudesPorPisoSubida; //( # piso, # personas)
+    private Map<Integer,Boolean> solicitudesPorPisoSubida; //( # piso, # solicitud)
 
     /**
      * Cola de  solicitudes por atender, a ella acceden todos los ascensores
      */
-    private Map<Integer,Integer> solicitudesPorPisoBajada; //( # piso, # personas)
+    private Map<Integer,Boolean> solicitudesPorPisoBajada; //( # piso, # solicitud)
 
     /**
      * Controla que varios ascensores no consulten la misma solicitud
@@ -71,8 +71,8 @@ public class Edificio {
         this.solicitudesPorPisoBajada = new HashMap<>();
         for(int i=1; i <= pisos; ++i){
             //se inicializan todas las solicitudes por piso
-            this.solicitudesPorPisoSubida.put(i,0);
-            this.solicitudesPorPisoBajada.put(i,0);
+            this.solicitudesPorPisoSubida.put(i,false);
+            this.solicitudesPorPisoBajada.put(i,false);
             //se inicializan todos los botones por piso
             this.botonSubida.add(i,new Semaphore(0));
             this.botonBajada.add(i,new Semaphore(0));
@@ -176,26 +176,18 @@ public class Edificio {
 
     }
 
+    /**
+     * Estados permitidos de un ascensor
+     */
+    enum Estado{
+        SUBIENDO, BAJANDO, DESOCUPADO
+    }
+
     class Ascensor extends Thread{
-        /**
-         * Se define uno de tres posibles estados de un ascensor
-         */
-        private static final int SUBIENDO = 1;
-
-        /**
-         * Se define uno de tres posibles estados de un ascensor
-         */
-        private static final int BAJANDO = 2;
-
-        /**
-         * Se define uno de tres posibles estados de un ascensor
-         */
-        private static final int SIN_USAR = 0;
-
         /**
          * En cual de los tres estados se encuentra el ascensor actualmente
          */
-        private int estadoActual;
+        private Estado estadoActual;
 
         /**
          * Piso en el que se encuentra el ascensor
@@ -203,14 +195,9 @@ public class Edificio {
         private int pisoActual;
 
         /**
-         * Piso que será atendido por el ascensor
+         * Lista de pisos en los que debe parar el ascensor
          */
-        private int atendiendoPiso;
-
-        /**
-         * Cantidad de personas que seran atendidas por el ascensor
-         */
-        private int atendiendoPersonas;
+        private List<Integer> rutaDePisos;
 
         /**
          * Control de puertas: abiertas o cerradas
@@ -232,13 +219,12 @@ public class Edificio {
          * @param cargaMaxima carga maxima soportada por el ascensor en cuestion
          */
         public Ascensor(int cargaMaxima){
-            this.estadoActual = SIN_USAR;
+            this.estadoActual = Estado.DESOCUPADO;
             this.pisoActual = 1; //por convencion, 1 es el piso sobre tierra
             this.puertas = new Semaphore(0); //puertas cerradas por default
             this.cargaMaxima = cargaMaxima;
             this.cargaActual = 0;
-            this.atendiendoPiso = 0;
-            this.atendiendoPersonas = 0;
+            this.rutaDePisos = new ArrayList<>();
         }
 
         /**
@@ -248,48 +234,44 @@ public class Edificio {
         public boolean realizar_consulta() {
             try {
                 consultaSolicitudes.acquire(); //espera su turno de consulta, evita que varios ascensores atiendan la misma
-                if (estadoActual == SIN_USAR) {
+                if (estadoActual == Estado.DESOCUPADO) {
                     int i = 1;
-                    while (estadoActual == SIN_USAR) {
-                        if (solicitudesPorPisoSubida.get(i) != 0) {
-                            this.estadoActual = SUBIENDO;
-                            this.atendiendoPiso = i;
-                            if (solicitudesPorPisoSubida.get(i) <= this.cargaMaxima) {
-                                this.atendiendoPersonas =
-                                        solicitudesPorPisoSubida.replace(i, 0);
-                            } else {
-                                this.atendiendoPersonas =
-                                        solicitudesPorPisoSubida.replace(i, solicitudesPorPisoSubida.get(i) - this.cargaMaxima);
-                            }
+                    while (this.estadoActual == Estado.DESOCUPADO) {
+                        if (solicitudesPorPisoSubida.get(i)) { //comprobamos las solicitudes de subida
+                            this.estadoActual = Estado.SUBIENDO;
+                            solicitudesPorPisoSubida.replace(i, false);
+                            this.rutaDePisos.add(i);
+                            consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
                             return true;
-                        } else if (solicitudesPorPisoBajada.get(i) != 0) {
-                            this.estadoActual = BAJANDO;
-                            this.atendiendoPiso = i;
-                            if (solicitudesPorPisoBajada.get(i) <= this.cargaMaxima) {
-                                this.atendiendoPersonas =
-                                        solicitudesPorPisoBajada.replace(i, 0);
-                            } else {
-                                this.atendiendoPersonas =
-                                        solicitudesPorPisoBajada.replace(i, solicitudesPorPisoBajada.get(i) - this.cargaMaxima);
-                            }
+                        } else if (solicitudesPorPisoBajada.get(i)) { //si nadie sube, comprobamos bajadas
+                            this.estadoActual = Estado.BAJANDO;
+                            solicitudesPorPisoBajada.replace(i,false);
+                            this.rutaDePisos.add(i);
+                            consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
                             return true;
                         }
                         i = (i < 5) ? i++ : 1; //manejo de la variable de bucle
                     }
-                } else if (this.estadoActual == SUBIENDO) {
-                    if ((this.pisoActual < pisos) && (solicitudesPorPisoSubida.get(this.pisoActual+1) != 0)){
-
-                    }
-                } else { //es decir, estadoActual = BAJANDO
-
+                } else if ((this.estadoActual == Estado.SUBIENDO) && (this.pisoActual < pisos)
+                        && (solicitudesPorPisoSubida.get(this.pisoActual+1))){
+                    solicitudesPorPisoSubida.replace(this.pisoActual+1, false);
+                    this.rutaDePisos.add(this.pisoActual+1);
+                    consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
+                    return true;
+                } else if ((this.estadoActual == Estado.BAJANDO) && (this.pisoActual > 1)
+                        &&(solicitudesPorPisoBajada.get(this.pisoActual-1))){
+                    solicitudesPorPisoBajada.replace(this.pisoActual-1,false);
+                    this.rutaDePisos.add(this.pisoActual-1);
+                    consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
+                    return true;
                 }
                 consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
+                return false;
             } catch (Exception e) {
-
+                System.out.println("Error realizando las consultas");
+                return false;
             }
-            return false;
         }
-
 
         @Override
         public void run(){
