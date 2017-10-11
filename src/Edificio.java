@@ -1,12 +1,21 @@
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Semaphore;
 
 public class Edificio {
     /**
-     * Cola de pisos por atender, a ella acceden todos los ascensores
+     * Cola de solicitudes por atender, a ella acceden todos los ascensores
      */
-    private Map<Integer,Integer> solicitudesPorPiso; //( # piso, # personas)
+    private Map<Integer,Integer> solicitudesPorPisoSubida; //( # piso, # personas)
+
+    /**
+     * Cola de  solicitudes por atender, a ella acceden todos los ascensores
+     */
+    private Map<Integer,Integer> solicitudesPorPisoBajada; //( # piso, # personas)
+
+    /**
+     * Controla que varios ascensores no consulten la misma solicitud
+     */
+    private Semaphore consultaSolicitudes;
 
     /**
      * Botones de subida por cada piso del edificio
@@ -56,6 +65,19 @@ public class Edificio {
         this.personas = personas;
         this.maxThreadsPersonas = maxThreadsPersonas;
         this.cantMaxPersonas = cantMaxPersonas;
+        this.botonBajada = new ArrayList<>(pisos);
+        this.botonSubida = new ArrayList<>(pisos);
+        this.solicitudesPorPisoSubida = new HashMap<>();
+        this.solicitudesPorPisoBajada = new HashMap<>();
+        for(int i=1; i <= pisos; ++i){
+            //se inicializan todas las solicitudes por piso
+            this.solicitudesPorPisoSubida.put(i,0);
+            this.solicitudesPorPisoBajada.put(i,0);
+            //se inicializan todos los botones por piso
+            this.botonSubida.add(i,new Semaphore(0));
+            this.botonBajada.add(i,new Semaphore(0));
+        }
+        this.consultaSolicitudes = new Semaphore(1);
     }
 
     /**
@@ -75,20 +97,76 @@ public class Edificio {
 
     class Persona extends Thread{
         /**
-         * Piso de origen
-         */
-        private int pisoOrigen;
-
-        /**
          *Piso de destino
          */
         private int pisoDestino;
 
         /**
-         *
+         * Piso actual
+         */
+        private int pisoActual;
+
+        /**
+         * Constructor
+         * @param pisoOrigen piso de origen
+         * @param pisoDestino piso de destino
+         */
+        public Persona(int pisoOrigen, int pisoDestino){
+            this.pisoDestino = pisoDestino;
+            this.pisoActual = pisoOrigen; //parametro irá variando conforme avance entre pisos
+        }
+
+        /**
+         * Retorna el piso en el que se encuentra la persona
+         * @return piso actual de la persona
+         */
+        public int getPisoActual() {
+            return pisoActual;
+        }
+
+        /**
+         * Retorna el piso al que se dirige la persona
+         * @return piso de destino de la persona
+         */
+        public int getPisoDestino() {
+            return pisoDestino;
+        }
+
+        /**
+         * Permite cambiar el piso actual en el que se encuentra la persona
+         * @param pisoActual nuevo piso
+         */
+        public void setPisoActual(int pisoActual) {
+            this.pisoActual = pisoActual;
+        }
+
+        /**
+         * Oprime un boton de subida o bajada según corresponda
          */
         public void llamar_ascensor(){
+            try {
+                if (this.pisoActual< this.pisoDestino){
+                    botonSubida.get(this.pisoActual).acquire();
+                }else{
+                    botonBajada.get(this.pisoActual).acquire();
+                }
+            } catch (Exception e){
+                System.out.println("Ha ocurrido un error con los botones del piso : " + this.pisoActual);
+            }
+        }
 
+        /**
+         * Permite a la persona entrar dentro de un ascensor
+         */
+        public void entrar_ascensor(){
+            System.out.println("Ingresé al ascensor en el piso: " + this.pisoActual);
+        }
+
+        /**
+         * Permite a la persona salir del ascensor
+         */
+        public void salir_ascensor(){
+            System.out.println("Salí del ascensor en el piso: " + this.pisoActual);
         }
 
         @Override
@@ -125,6 +203,16 @@ public class Edificio {
         private int pisoActual;
 
         /**
+         * Piso que será atendido por el ascensor
+         */
+        private int atendiendoPiso;
+
+        /**
+         * Cantidad de personas que seran atendidas por el ascensor
+         */
+        private int atendiendoPersonas;
+
+        /**
          * Control de puertas: abiertas o cerradas
          */
         private Semaphore puertas;
@@ -149,7 +237,59 @@ public class Edificio {
             this.puertas = new Semaphore(0); //puertas cerradas por default
             this.cargaMaxima = cargaMaxima;
             this.cargaActual = 0;
+            this.atendiendoPiso = 0;
+            this.atendiendoPersonas = 0;
         }
+
+        /**
+         * Consulta si hay solicitudes pendientes por atender, en cuyo caso libera la cola de solicitudes
+         * @return true si se obtiene una solicitud para atender
+         */
+        public boolean realizar_consulta() {
+            try {
+                consultaSolicitudes.acquire(); //espera su turno de consulta, evita que varios ascensores atiendan la misma
+                if (estadoActual == SIN_USAR) {
+                    int i = 1;
+                    while (estadoActual == SIN_USAR) {
+                        if (solicitudesPorPisoSubida.get(i) != 0) {
+                            this.estadoActual = SUBIENDO;
+                            this.atendiendoPiso = i;
+                            if (solicitudesPorPisoSubida.get(i) <= this.cargaMaxima) {
+                                this.atendiendoPersonas =
+                                        solicitudesPorPisoSubida.replace(i, 0);
+                            } else {
+                                this.atendiendoPersonas =
+                                        solicitudesPorPisoSubida.replace(i, solicitudesPorPisoSubida.get(i) - this.cargaMaxima);
+                            }
+                            return true;
+                        } else if (solicitudesPorPisoBajada.get(i) != 0) {
+                            this.estadoActual = BAJANDO;
+                            this.atendiendoPiso = i;
+                            if (solicitudesPorPisoBajada.get(i) <= this.cargaMaxima) {
+                                this.atendiendoPersonas =
+                                        solicitudesPorPisoBajada.replace(i, 0);
+                            } else {
+                                this.atendiendoPersonas =
+                                        solicitudesPorPisoBajada.replace(i, solicitudesPorPisoBajada.get(i) - this.cargaMaxima);
+                            }
+                            return true;
+                        }
+                        i = (i < 5) ? i++ : 1; //manejo de la variable de bucle
+                    }
+                } else if (this.estadoActual == SUBIENDO) {
+                    if ((this.pisoActual < pisos) && (solicitudesPorPisoSubida.get(this.pisoActual+1) != 0)){
+
+                    }
+                } else { //es decir, estadoActual = BAJANDO
+
+                }
+                consultaSolicitudes.release(1); //hecha la consulta, se libera el Semaphore
+            } catch (Exception e) {
+
+            }
+            return false;
+        }
+
 
         @Override
         public void run(){
