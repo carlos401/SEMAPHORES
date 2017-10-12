@@ -1,6 +1,7 @@
 import java.util.*;
 import java.util.concurrent.Semaphore;
 
+//cambios en el codigo
 public class Edificio {
     /**
      * Cola de solicitudes por atender, a ella acceden todos los ascensores
